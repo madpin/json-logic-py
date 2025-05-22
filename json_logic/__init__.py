@@ -77,18 +77,29 @@ def less(a, b, *args):
                 return False
         result = a < b
         
-    # Handle chained comparisons like a < b < c
-    return result and (not args or less(b, *args))
+    # If the current comparison is False, no need to continue
+    if not result:
+        return False
+        
+    # If there are more args, all comparisons must be true: a < b < c < ...
+    if args:
+        return less(b, *args)
+    return result
 
 
 def less_or_equal(a, b, *args):
     """Implements the '<=' operator with JS-style type coertion."""
     # Short-circuit evaluation with soft_equals first for common cases
-    if soft_equals(a, b):
-        return not args or less_or_equal(b, *args)
+    result = soft_equals(a, b) or less(a, b)
+    
+    # If the current comparison is False, no need to continue
+    if not result:
+        return False
         
-    result = less(a, b)
-    return result and (not args or less_or_equal(b, *args))
+    # If there are more args, all comparisons must be true: a <= b <= c <= ...
+    if args:
+        return less_or_equal(b, *args)
+    return result
 
 
 def to_numeric(arg):
@@ -278,29 +289,29 @@ def filter_array(data, array, logic):
         array = [array]
     
     result = []
+    # Optimize: Create child_data once and update it in place
+    child_data = {} if data is None else data.copy()
+    
     # Apply the logic to each item in the array
     for item in array:
-        # Create a new data context with the current item
-        item_data = {}
+        # Update child_data with the current item
+        child_data[""] = item
         
-        # Set up the empty var access to return the item itself
-        item_data[""] = item
-        
-        # If item is a dict, merge it with the item_data for key access
+        # If item is a dict, merge its keys directly into child_data
         if isinstance(item, dict):
-            item_data.update(item)
-                
-        # Combine with the original data context
-        child_data = {}
-        if data:
-            child_data.update(data)
-        child_data.update(item_data)
+            for k, v in item.items():
+                child_data[k] = v
         
         # Test the condition
         try:
             condition_result = jsonLogic(logic, child_data)
             if condition_result:
                 result.append(item)
+                
+            # Clean up after each iteration
+            if isinstance(item, dict):
+                for k in item:
+                    child_data.pop(k, None)
         except Exception:
             # If the condition evaluation fails, skip this item
             continue
@@ -328,27 +339,27 @@ def map_array(data, array, logic):
         array = [array]
     
     result = []
+    # Optimize: Create child_data once and update it in place
+    child_data = {} if data is None else data.copy()
+    
     # Apply the logic to each item in the array
     for item in array:
-        # Create a new data context with the current item
-        item_data = {}  
+        # Update child_data with the current item
+        child_data[""] = item
         
-        # Set up the empty var access to return the item itself
-        item_data[""] = item
-        
-        # If item is a dict, merge it with the item_data for key access
+        # If item is a dict, update child_data with item keys
         if isinstance(item, dict):
-            item_data.update(item)
-                
-        # Combine with the original data context
-        child_data = {}
-        if data:
-            child_data.update(data)
-        child_data.update(item_data)
+            for k, v in item.items():
+                child_data[k] = v
         
         # Transform the value
         try:
             result.append(jsonLogic(logic, child_data))
+            
+            # Clean up after each iteration
+            if isinstance(item, dict):
+                for k in item:
+                    child_data.pop(k, None)
         except Exception:
             # If transformation fails, add None
             result.append(None)
@@ -366,22 +377,22 @@ def reduce_array(data, array, logic, initial):
         array = [array]
     
     accumulator = initial
+    # Optimize: Create child_data once and update it in place
+    child_data = {} if data is None else data.copy()
+    
     # Apply the logic to each item in the array
     for item in array:
-        # Create a new data context with the current item and accumulator
-        item_data = {
-            "current": item,
-            "accumulator": accumulator
-        }
+        # Create item_data directly in the child_data dict
+        child_data["current"] = item
+        child_data["accumulator"] = accumulator
         
-        # If item is a dict, merge it with the item_data for key access
+        # Set up empty var access to return the item itself
+        child_data[""] = item
+        
+        # If item is a dict, add its properties to context with current. prefix
         if isinstance(item, dict):
             for k, v in item.items():
-                item_data["current." + k] = v
-                
-        # Combine with the original data context
-        child_data = data.copy() if data else {}
-        child_data.update(item_data)
+                child_data["current." + k] = v
         
         # Update the accumulator
         try:
@@ -413,25 +424,27 @@ def test_all(data, array, logic):
         return all(x >= threshold for x in array)
     
     # Check each item individually
+    # Optimize: Create child_data once and update it in place
+    child_data = data.copy() if data else {}
+    
     for item in array:
-        # Create a new data context with the current item
-        item_data = {}
+        # Update the child_data with current item data
+        child_data[""] = item
         
-        # Set up the empty var access to return the item itself
-        item_data[""] = item
-        
-        # If item is a dict, merge it with the item_data for key access
+        # If item is a dict, update child_data with item keys
         if isinstance(item, dict):
-            item_data.update(item)
-                
-        # Combine with the original data context
-        child_data = data.copy() if data else {}
-        child_data.update(item_data)
+            for k, v in item.items():
+                child_data[k] = v
         
         # Test the condition
         try:
             if not jsonLogic(logic, child_data):
                 return False
+            
+            # Clean up after each iteration to prevent key collisions
+            if isinstance(item, dict):
+                for k in item:
+                    child_data.pop(k, None)
         except Exception:
             return False
             
@@ -454,28 +467,34 @@ def test_some(data, array, logic):
     if not isinstance(array, (list, tuple)):
         array = [array]
         
+    # Handle direct comparison optimization when using {"var": ""}
+    if isinstance(logic, dict) and "==" in logic and isinstance(logic["=="], list) and len(logic["=="])==2 and isinstance(logic["=="][0], dict) and "var" in logic["=="][0] and logic["=="][0]["var"] == "":
+        target = logic["=="][1]
+        # Fast path for common case
+        return any(soft_equals(item, target) for item in array)
+        
+    # Optimize: Create child_data once and update it in place
+    child_data = data.copy() if data else {}
+        
     # Check each item individually
     for item in array:
-        # Create a new data context with the current item
-        item_data = {}
+        # Update child_data with the current item
+        child_data[""] = item
         
-        # Set up the empty var access to return the item itself
-        item_data[""] = item
-        
-        # If item is a dict, merge it with the item_data for key access
+        # If item is a dict, update child_data with item keys
         if isinstance(item, dict):
-            item_data.update(item)
-                
-        # Combine with the original data context
-        child_data = {}
-        if data:
-            child_data.update(data)
-        child_data.update(item_data)
+            for k, v in item.items():
+                child_data[k] = v
         
         # Test the condition
         try:
             if jsonLogic(logic, child_data):
                 return True
+                
+            # Clean up after each iteration to prevent key collisions
+            if isinstance(item, dict):
+                for k in item:
+                    child_data.pop(k, None)
         except Exception:
             continue
             
@@ -498,26 +517,28 @@ def test_none(data, array, logic):
     if not isinstance(array, (list, tuple)):
         array = [array]
         
+    # Optimize: Create child_data once and update it in place
+    child_data = data.copy() if data else {}
+        
     # Check each item individually
     for item in array:
-        # Create a new data context with the current item
-        item_data = {}
+        # Update the child_data with current item
+        child_data[""] = item
         
-        # Set up the empty var access to return the item itself
-        item_data[""] = item
-        
-        # If item is a dict, merge it with the item_data for key access
+        # If item is a dict, update child_data with item keys
         if isinstance(item, dict):
-            item_data.update(item)
-                
-        # Combine with the original data context
-        child_data = data.copy() if data else {}
-        child_data.update(item_data)
+            for k, v in item.items():
+                child_data[k] = v
         
         # Test the condition
         try:
             if jsonLogic(logic, child_data):
                 return False
+                
+            # Clean up after each iteration to prevent key collisions
+            if isinstance(item, dict):
+                for k in item:
+                    child_data.pop(k, None)
         except Exception:
             continue
             
@@ -589,37 +610,43 @@ def jsonLogic(tests, data=None):
     if operator == 'missing_some':
         return missing_some(data, *values)
     
-    # Special cases for array operations
+    # Special cases for array operations - optimize the hot path
     if operator == 'filter':
         array = jsonLogic(values[0], data)
-        logic = values[1]
-        return filter_array(data, array, logic)
+        return filter_array(data, array, values[1])
     if operator == 'map':
         array = jsonLogic(values[0], data)
-        logic = values[1]
-        return map_array(data, array, logic)
+        return map_array(data, array, values[1])
     if operator == 'reduce':
         array = jsonLogic(values[0], data)
-        logic = values[1]
         initial = jsonLogic(values[2], data)
-        return reduce_array(data, array, logic, initial)
+        return reduce_array(data, array, values[1], initial)
     if operator == 'all':
         array = jsonLogic(values[0], data)
-        logic = values[1]
-        return test_all(data, array, logic)
+        return test_all(data, array, values[1])
     if operator == 'some':
         array = jsonLogic(values[0], data)
-        logic = values[1]
-        return test_some(data, array, logic)
+        return test_some(data, array, values[1])
     if operator == 'none':
         array = jsonLogic(values[0], data)
-        logic = values[1]
-        return test_none(data, array, logic)
+        return test_none(data, array, values[1])
     
+    # Common operations optimization - avoid function lookup for frequently used operations
+    if operator == '==':
+        return soft_equals(jsonLogic(values[0], data), jsonLogic(values[1], data))
+    if operator == '===':
+        return hard_equals(jsonLogic(values[0], data), jsonLogic(values[1], data))
+    if operator == '<':
+        # Handle multiple arguments like a < b < c by evaluating all values first
+        evaluated_values = [jsonLogic(val, data) for val in values]
+        return less(*evaluated_values)
+    if operator == '<=':
+        # Handle multiple arguments like a <= b <= c by evaluating all values first
+        evaluated_values = [jsonLogic(val, data) for val in values]
+        return less_or_equal(*evaluated_values)
+
     # For all other operations, evaluate all values first
-    evaluated_values = []
-    for val in values:
-        evaluated_values.append(jsonLogic(val, data))
+    evaluated_values = [jsonLogic(val, data) for val in values]
 
     # Get the operation function
     try:
